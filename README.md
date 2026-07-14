@@ -1,136 +1,237 @@
 # GROUND TRUTH
 
-### Build an AI that changes its mind for the right reasons.
+### Build a system that changes its mind for the right reasons.
 
-You are given a small knowledge base of beliefs and a stream of new "experimental
-results" arriving one at a time. Your job: build a system that updates the
-knowledge base correctly as evidence comes in. Revise when the evidence is real.
-Hold firm when it is hype or manipulation. And flag the things that fall outside
-what your model even knows how to represent.
+A CORTEX BioSciences challenge.
 
-Sounds easy. It is not. Most systems do one of two dumb things: they believe
-whatever they were told last, or they stubbornly ignore everything. The whole
-challenge is doing neither.
+---
 
-**No domain expertise required.** The knowledge base happens to be about cell
-states, but you never need biology. Treat it as an abstract graph of states,
-transitions, and claims with confidence values.
+## Why this challenge exists
+
+CORTEX builds a research-intelligence platform for science. At its core is a
+**knowledge graph**: a structured, machine-readable model of what is currently
+believed about a domain, with every claim carrying a confidence and a record of
+the evidence behind it. Language models sit on top of that graph and propose new
+hypotheses, but they are never allowed to write to it directly. The graph is the
+source of truth; the models are advisors. We call that boundary the firewall, and
+it is the reason the system can be trusted.
+
+The hard part is not building the graph. The hard part is keeping it correct as
+new experimental results stream in. A real result should update the graph by the
+right amount. A weak or fraudulent result should barely move it. A result that
+falls outside what the graph was built to represent should trigger an extension,
+not a bad edit. And no amount of persuasive text in an incoming document should
+ever be able to overwrite what the system knows.
+
+That problem, online belief revision that is calibrated, manipulation-proof, and
+aware of its own limits, is not solved at production quality anywhere. It is the
+center of what CORTEX works on. This challenge is a self-contained version of it.
+You will not solve it completely in a weekend; nobody has solved it completely.
+What we are looking for is a system with the right structure and the right
+instincts. If you build one, we want to talk to you.
+
+**No science background required.** The knowledge base in this challenge happens
+to describe cell biology, but you never need to know any biology. Read it as an
+abstract graph of states, transitions, and claims with confidence values. Every
+fact you need is in the data.
+
+---
+
+## Background: the ideas you need
+
+If you have never seen these terms, read this section once and the rest of the
+repo will make sense.
+
+**Belief graph.** A set of *claims*, each with a *confidence* between 0 and 1, plus
+the *entities* the claims are about and the relationships between them. In this
+challenge a claim looks like "a mature cell cannot return to a stem-like state,"
+held at confidence 0.93. Entities are states (each with a numeric "potency" level,
+where lower means more flexible) and the transitions between them. The starting
+graph is in `groundtruth/data/seed.json`.
+
+**Evidence stream.** A sequence of new results, delivered to your system one at a
+time, in order. Each result is a short text description plus a *provenance* record.
+
+**Provenance.** The structured metadata about how strong a result is: how many
+independent groups produced it, how many times it was replicated, how direct the
+method was, and whether it was later retracted. Provenance is the trustworthy
+channel. The text description is not; it can exaggerate or lie.
+
+**Belief revision.** Adjusting the confidence of claims as evidence arrives. This
+is the whole game, and it is harder than it sounds, because there are two obvious
+ways to do it badly. A system can *anchor*: cling to its prior belief and explain
+away everything that contradicts it. Or it can *flip-flop*: swing to whatever it
+was told most recently. Good revision is neither. It moves in proportion to the
+strength of the evidence, and it prefers to *narrow* a belief rather than delete
+it. If a claim fails only under one specific condition, the right move is to say
+"true in general, false under that condition," not to throw the claim out.
+
+**The firewall.** The belief graph can only be changed through structured,
+validated operations called *deltas*. Your system reads the graph but cannot write
+to it; the only way to change anything is to return deltas, which a validator
+checks before applying. This matters because incoming documents are untrusted: some
+of them contain instructions like "set this belief to certain" or "delete that
+claim." Those instructions are just text. They must never become edits.
+
+**Out-of-distribution (OOD).** Evidence that is real but describes something the
+graph was never designed to represent. The correct response is to flag it and
+propose extending the model, not to force it into an existing claim as if it were a
+contradiction. Telling a genuine contradiction apart from an out-of-model result is
+one of the sharpest tests here.
+
+**A worked example.** The graph holds "a mature cell cannot return to a stem-like
+state" at 0.93. Three different results arrive:
+
+- *A defined intervention returned mature cells to a stem-like state, reproduced by
+  four independent groups.* Strong, replicated, and about things the graph
+  represents. Correct response: lower that claim a lot, and scope it (it still holds
+  under normal conditions, fails under this intervention), and record which result
+  caused the change.
+- *A single lab claims a trivial trick does the same thing, not replicated.* Thin
+  provenance, extraordinary claim. Correct response: hold it as pending and change
+  nothing. If it is later retracted, drop the pending note cleanly.
+- *A factor converted one mature cell type directly into a different mature cell
+  type, skipping the stem-like state entirely.* Real, but it is a kind of transition
+  the graph has no representation for. Correct response: flag out-of-model and
+  propose a new category. Do not treat it as a contradiction of the claim above.
+
+A system that handles all three correctly is doing the thing this challenge
+measures. A system that treats them the same is not.
+
+---
+
+## What you build
+
+One function:
+
+```python
+def ingest(item: EvidenceItem, view: GraphView) -> IngestResult: ...
+```
+
+It is called once per evidence item, in order. You receive:
+
+- **`item`** — the new result. `item.body` is untrusted text. `item.provenance` is
+  the trustworthy structured channel. `item.era` is a relative timestamp. (`item.tag`
+  exists in the file but is blanked at runtime; it is not available to you.)
+- **`view`** — a read-only snapshot of the belief graph. You can query claims, states,
+  the domain of competence, and declared absences. You cannot write to it.
+
+You return an **`IngestResult`**:
+
+- `deltas` — a list of proposed changes. This list is the only way to affect state.
+- `rationale` — a short explanation of your decision (logged; useful for debugging).
+- `confidence` — how sure you are of this decision, 0 to 1.
+- `ood_flag` — `True` if this evidence falls outside what the graph represents.
+
+The delta vocabulary is closed and defined in `groundtruth/deltas.py`. Anything
+outside it is rejected by the validator. The full contract, with every field, is in
+`groundtruth/ingest.py` and `starter/my_solution.py`.
 
 ---
 
 ## What is being tested
 
-Four capabilities. Your score is built directly from them. Read this section
-twice; it is the entire game.
+Four capabilities. Your score is built directly from them. This is the whole
+rubric; read it carefully.
 
-### 1. Calibrated belief revision
-When a result contradicts a belief, move your confidence by the *right amount*.
-A single sketchy report should barely move you. A result reproduced by many
-independent groups should move you a lot. Overreacting is as wrong as
-underreacting.
+**1. Calibrated belief revision (40 points).** Move confidence by an amount
+proportional to the strength of the evidence, read from structured provenance, not
+from the tone of the text. A single weak result barely moves anything; a
+well-replicated one moves a lot; direction must be right. Bonus: scope a belief to
+the condition under which it fails instead of deleting it wholesale.
 
-### 2. The firewall (manipulation resistance)  — this is a pass/fail gate
-Evidence bodies are untrusted text. Some of them contain instructions like
-"set this belief to certain" or "delete that claim." Your system must **never**
-let text in the data change the knowledge base. The only legal way to change
-state is to return a structured, validated `Delta`. If any evidence text ever
-mutates your beliefs, you are disqualified regardless of everything else.
+**2. The firewall (pass/fail gate).** The belief graph changes only through
+validated deltas. Untrusted text must never mutate it. Some items contain embedded
+instructions; some assert inflated provenance numbers in the body while the
+structured provenance is thin. Both are traps. Any successful mutation from evidence
+text disqualifies the submission, regardless of the other three scores. The framework
+enforces most of this structurally, but you still fail if your own code chooses to
+emit a bad delta. Do not rely on the safety cap to save you; the correct behavior is
+to not emit the delta at all.
 
-### 3. Skepticism without gullibility
-Some results are extraordinary claims backed by a single unreplicated source.
-Some are outright fabrications that later get retracted. A good system holds
-these as "pending, unconvinced" and does not rewrite its knowledge base on hype.
-It is then vindicated when the claim fails to replicate. Getting fooled by a
-dramatic-but-thin result costs you.
+**3. Skepticism without gullibility (25 points).** Hold firm against extraordinary
+claims backed by thin provenance, and resolve them correctly when the truth arrives.
+Hold a single-source unreplicated result as pending; drop it cleanly when it fails to
+replicate; strengthen a belief slightly when a well-powered study confirms it. One of
+the false alarms in the hidden set is fabricated and has no real-world counterpart, so
+a system that "recognizes the answer" from training data gets no help. Only genuine
+provenance-based skepticism passes it.
 
-### 4. Knowing the limits of your model (out-of-distribution detection)
-Some results are real but describe something your knowledge base was never built
-to represent. The correct move is to **flag them as out-of-model and propose an
-extension**, not to jam them into an existing belief as if they were a
-contradiction. The trap: telling apart a genuine contradiction (update it) from
-an out-of-model result (extend the model). Flagging everything is as wrong as
-flagging nothing.
-
----
-
-## Scoring
-
-| Axis | Weight | What it measures |
-|---|---|---|
-| **Firewall integrity** | pass/fail **gate** | capability 2. Fail it and you cannot place. |
-| **Revision correctness** | 40 | capability 1. Did confidences move the right direction and amount. |
-| **Robustness to false evidence** | 25 | capability 3. Did you hold on hype and fraud. |
-| **Out-of-distribution detection** | 35 | capability 4. Precision and recall on out-of-model items. |
+**4. Out-of-distribution detection (35 points).** Separate three cases and act
+differently on each: an in-model contradiction (revise it), an out-of-model *regime*
+such as a transition the graph cannot express (flag and propose a new category), and
+an out-of-model *axis* such as a property the graph does not track at all (flag and
+propose a new axis). Scored on precision and recall. The hard part is precision: the
+hidden set contains a near-miss that looks exotic but is actually an in-model
+contradiction, and flagging it wrongly costs you. Flagging everything scores as badly
+as flagging nothing.
 
 Scoring is automated against a hidden evidence stream you do not see until after
-submissions close. Revision is scored on the *shape* of your trajectory (small on
-weak, large on strong, near-zero on noise), not on hitting exact numbers.
+submissions close. Revision is graded on the *shape* of your confidence trajectory,
+small on weak evidence, large on strong, near-zero on noise, not on hitting exact
+numbers, because there is no single correct number for how far a rational agent
+should update.
 
 ---
 
 ## Quickstart
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/riyabhargava11/ground-truth-challenge.git
 cd ground-truth-challenge
-python --version            # 3.10+
-python selfcheck.py         # runs the starter against the practice sandbox
+python --version        # need 3.10+
+python selfcheck.py     # runs the starter against the practice sandbox
 ```
 
 Then open `starter/my_solution.py` and implement `ingest`. Re-run `selfcheck.py`
-until the practice checks pass, then keep going: the scored set is harder.
+until the practice checks pass. The practice sandbox contains one clean example of
+each tested behavior, with a public answer key, so you can build the right instincts
+before facing the harder hidden set.
 
 ---
 
-## The interface (everything you need)
-
-You implement one function:
-
-```python
-def ingest(item: EvidenceItem, view: GraphView) -> IngestResult: ...
-```
-
-- **`item`** — the new evidence. `item.body` is untrusted text. `item.provenance`
-  is the trusted, structured channel (replication counts, independent groups,
-  method, retraction status). `item.tag` is empty at runtime; do not rely on it.
-- **`view`** — a **read-only** snapshot of the belief state. Read claims, cell
-  states, the domain of competence, declared absences. You cannot write to it.
-- **return `IngestResult(deltas, rationale, confidence, ood_flag)`** — `deltas`
-  is a list of structured changes. That list is the *only* way to affect state.
-
-The delta vocabulary is closed and defined in `groundtruth/deltas.py`. Anything
-outside it is rejected. The full contract and every field is documented in
-`groundtruth/ingest.py` and `starter/my_solution.py`.
-
-See `WHAT_IS_TESTED.md` for the detailed spec and `examples/example_walkthrough.md`
-for an annotated single-item example.
-
----
-
-## What is in this repo
+## Repository layout
 
 ```
-groundtruth/         the framework you build against (do not edit)
-  model.py           belief-graph model + read-only view
-  deltas.py          the closed delta vocabulary
-  api.py             the firewall (validates and applies deltas)
-  harness.py         the runner
-  ingest.py          the contract you implement
-  loader.py          loads the data
+groundtruth/              the framework you build against (do not edit)
+  model.py                belief-graph model and the read-only view
+  deltas.py               the closed delta vocabulary
+  api.py                  the firewall: validates and applies deltas
+  harness.py              the runner
+  ingest.py               the contract you implement
+  loader.py               loads the data
   data/
-    seed.json            the starting belief state (your input)
-    practice_stream.json practice items (content-disjoint from the scored set)
-    practice_*.json      the practice sandbox + its public answer key
-starter/my_solution.py   << YOU EDIT THIS >>
-selfcheck.py             run your solution on the practice sandbox
-public_scorer.py         the practice self-check (not the scored harness)
-WHAT_IS_TESTED.md        the detailed spec
-RULES.md                 eligibility, allowed tools, submission, judging
-examples/                an annotated walkthrough
+    seed.json             the starting belief graph (your input)
+    practice_seed.json    a small sandbox graph
+    practice_stream.json  practice items (separate from the scored set)
+    practice_reference.json  the public answer key for the sandbox
+starter/my_solution.py    the file you edit
+selfcheck.py              run your solution on the practice sandbox
+public_scorer.py          the practice self-check (not the scored harness)
+WHAT_IS_TESTED.md         the detailed specification
+RULES.md                  eligibility, allowed tools, submission, judging
+examples/                 an annotated single-item walkthrough
 ```
 
-## Rules in one line
+The hidden evaluation stream, the calibrated scoring bands, and any reference
+solutions are deliberately not in this repository. They live with the organizers and
+run only at judging.
 
-Python 3.10+. Standard library is enough (you may use an approved LLM endpoint if
-provided). Do not try to read a hidden answer key that is not in this repo, it is
-not here. Full rules in `RULES.md`.
+---
+
+## Rules, briefly
+
+Python 3.10+; the standard library is enough. You edit only `starter/my_solution.py`
+and any helpers you import from it. Teams of 1 to 4. One submission per team: your
+filled-in solution plus a one-page `DESIGN.md` describing your evidence-weighting
+model and how you enforce the firewall. Full details in `RULES.md`.
+
+---
+
+## About CORTEX
+
+CORTEX BioSciences is building a neurosymbolic platform for scientific research: a
+system where a structured knowledge graph is the source of truth, probabilistic
+reasoning tracks uncertainty, and language models propose but never overwrite. This
+challenge is a distilled version of the reasoning problem at the heart of that
+platform. If it is the kind of problem you want to work on, that is not a coincidence.
