@@ -1,8 +1,6 @@
 # Rules
 
-**Language / runtime.** Python 3.10+. The standard library is sufficient. If the
-organizers provide a shared model endpoint, you may call it from inside `ingest`;
-no other network access is assumed during evaluation.
+**Language / runtime.** Python 3.10+. The standard library is sufficient. 
 
 **What you edit.** Only `starter/my_solution.py` (and any helper modules you add
 and import from it). Do not modify anything under `groundtruth/`; at judging your
